@@ -55,7 +55,12 @@ services:
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
       WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
     depends_on:
-      - crm_minio
+      # Start MinIO first, and wait until the buckets exist so the very first
+      # upload can't race a missing bucket.
+      crm_minio:
+        condition: service_started
+      crm_createbuckets:
+        condition: service_completed_successfully
     networks:
       - zapflow_network
 
@@ -77,6 +82,66 @@ services:
       - ./volumes/minio:/data
     networks:
       - zapflow_network
+
+  # ---- MinIO bucket bootstrap (runs once, then exits) ----
+  # The app expects three buckets to already exist; MinIO does not create them
+  # on demand. This waits for MinIO to accept connections, creates the buckets
+  # (idempotent), and grants anonymous read so the browser can load avatars /
+  # chat media directly from MINIO_PUBLIC_URL (matching the old Supabase
+  # public-bucket behaviour). Objects are download-only — no bucket listing.
+  crm_createbuckets:
+    image: minio/mc:latest
+    container_name: crm_createbuckets
+    depends_on:
+      - crm_minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "Waiting for MinIO to be ready…"
+        until mc alias set local http://crm_minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null 2>&1; do
+          sleep 2
+        done
+        for b in avatars chat-media flow-media; do
+          mc mb --ignore-existing "local/$$b"
+          mc anonymous set download "local/$$b"
+        done
+        echo "Buckets ready: avatars, chat-media, flow-media"
+    networks:
+      - zapflow_network
+    restart: "no"
+
+  # ---- Schema migrator (opt-in, run once before first boot) ----
+  # Applies db/00_compat.sql + supabase/migrations/*.sql + db/10_better_auth.sql
+  # to the CRM database over the private network. Guarded behind the "migrate"
+  # profile so it never runs on a normal `up`. Run it explicitly:
+  #
+  #   docker compose -f docker-compose.crm.yml --env-file .env.docker \
+  #     --profile migrate run --rm crm_migrate
+  #
+  # Every file is idempotent, so it's safe to re-run after pulling new
+  # migrations.
+  crm_migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrator
+    container_name: crm_migrate
+    profiles:
+      - migrate
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      # postgres:16 has no TLS on the private network; keep sslmode out of the
+      # URL. Set to "false" only if you point at an SSL host with a self-signed
+      # cert.
+      DATABASE_SSL_REJECT_UNAUTHORIZED: ${DATABASE_SSL_REJECT_UNAUTHORIZED:-true}
+    networks:
+      - zapflow_network
+    restart: "no"
 
 # The Postgres lives on an already-existing network created by your main
 # compose file. Marking it external means this file joins it instead of

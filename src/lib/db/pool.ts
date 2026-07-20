@@ -53,20 +53,49 @@ function createPool(): Pool {
 }
 
 /**
- * Singleton pool. Reused across hot reloads in dev and across invocations
- * on the same serverless instance in production.
+ * Lazily-created singleton pool.
+ *
+ * The pool is NOT created at import time. If it were, simply importing this
+ * module (which `better-auth.ts` and ~30 route modules do) would call
+ * `createPool()` and throw when `DATABASE_URL` is absent — exactly what
+ * happens during `next build` in Docker, where the database URL is a runtime
+ * secret, not a build arg. Deferring creation to the first real query keeps
+ * the production build working without a database connection.
  */
-export const pool: Pool = global.__wacrmPgPool ?? createPool()
-if (process.env.NODE_ENV !== 'production') {
-  global.__wacrmPgPool = pool
+export function getPool(): Pool {
+  const existing = global.__wacrmPgPool
+  if (existing) return existing
+  const created = createPool()
+  // Reuse across hot reloads in dev and across invocations in production
+  // (a single long-lived server process on the VPS).
+  global.__wacrmPgPool = created
+  return created
 }
+
+/**
+ * Backwards-compatible `pool` export.
+ *
+ * A Proxy that forwards every access to the real pool, creating it on first
+ * use. This lets `better-auth.ts` keep doing `database: pool` — Better Auth
+ * only touches the pool when it runs its first query at runtime, so the real
+ * connection is still deferred past build time.
+ */
+export const pool: Pool = new Proxy({} as Pool, {
+  get(_target, prop) {
+    const real = getPool() as unknown as Record<string | symbol, unknown>
+    const value = real[prop]
+    return typeof value === 'function'
+      ? (value as (...args: unknown[]) => unknown).bind(real)
+      : value
+  },
+})
 
 /** Run a parameterized query and return all rows. */
 export async function query<T extends QueryResultRow = QueryResultRow>(
   text: string,
   params: unknown[] = []
 ): Promise<T[]> {
-  const result = await pool.query<T>(text, params as never[])
+  const result = await getPool().query<T>(text, params as never[])
   return result.rows
 }
 
@@ -83,7 +112,7 @@ export async function queryOne<T extends QueryResultRow = QueryResultRow>(
 export async function withTransaction<T>(
   fn: (client: PoolClient) => Promise<T>
 ): Promise<T> {
-  const client = await pool.connect()
+  const client = await getPool().connect()
   try {
     await client.query('BEGIN')
     const result = await fn(client)

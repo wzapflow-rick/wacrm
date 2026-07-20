@@ -28,6 +28,18 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # required here; anything read at build time must be provided as build args.
 RUN npm run build
 
+# ---- migrator: one-shot schema applier (run via the compose "migrate" profile) ----
+# Reuses the full node_modules from `deps` (which includes pg) and adds only the
+# SQL + the applier script, so `node db/apply.mjs` can bootstrap the CRM database
+# over the private Docker network. Not part of the app runtime image.
+FROM node:20-alpine AS migrator
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json ./
+COPY db ./db
+COPY supabase ./supabase
+CMD ["node", "db/apply.mjs"]
+
 # ---- runner: minimal runtime image ----
 FROM node:20-alpine AS runner
 WORKDIR /app
@@ -50,6 +62,12 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 USER nextjs
 
 EXPOSE 3000
+
+# Liveness/readiness probe. Node 20 ships a global fetch, so we avoid needing
+# curl/wget in the Alpine image. Exits 0 only when /api/health returns 2xx
+# (app up + database reachable).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # server.js is emitted by Next's standalone output.
 CMD ["node", "server.js"]
