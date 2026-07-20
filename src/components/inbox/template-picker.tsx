@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import type { MessageTemplate } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -94,37 +93,30 @@ export function TemplatePicker({
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        if (!cancelled) {
+      // Account-scoped server read: returns the account's APPROVED templates
+      // so any teammate can send them in a shared account.
+      try {
+        const res = await fetch("/api/whatsapp/templates/approved", {
+          cache: "no-store",
+        });
+        if (cancelled) return;
+        if (!res.ok) {
+          console.error("Failed to fetch templates:", res.status);
           setTemplates([]);
-          setLoading(false);
+        } else {
+          const { templates: loaded } = (await res.json()) as {
+            templates: MessageTemplate[];
+          };
+          setTemplates(loaded ?? []);
         }
-        return;
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Failed to fetch templates:", err);
+          setTemplates([]);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      // Scope by RLS (message_templates_select → is_account_member), NOT by
-      // user_id. Templates are account-owned, so filtering on the caller's
-      // user_id hid templates that a teammate created — leaving them unable
-      // to send approved templates in a shared account.
-      const { data, error } = await supabase
-        .from("message_templates")
-        .select("*")
-        .eq("status", "APPROVED")
-        .order("created_at", { ascending: false });
-
-      if (cancelled) return;
-      if (error) {
-        console.error("Failed to fetch templates:", error);
-        setTemplates([]);
-      } else {
-        setTemplates((data as MessageTemplate[]) ?? []);
-      }
-      setLoading(false);
     })();
 
     return () => {

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import type { Contact, Deal, ContactNote, Tag } from "@/types";
@@ -40,36 +39,42 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
   const fetchContactData = useCallback(async () => {
     if (!contact) return;
 
-    const supabase = createClient();
+    // The consolidated detail endpoint returns deals + notes; the contact's
+    // tag links and the account tag catalog are fetched alongside so we can
+    // reconstruct the enriched `{ ...tag, contact_tag_id }` shape the sidebar
+    // renders. All three are account-scoped server-side.
+    try {
+      const [detailRes, contactTagsRes, tagsRes] = await Promise.all([
+        fetch(`/api/contacts/${contact.id}`, { cache: "no-store" }),
+        fetch(`/api/contacts/${contact.id}/tags`, { cache: "no-store" }),
+        fetch(`/api/tags`, { cache: "no-store" }),
+      ]);
 
-    // Fetch deals, notes, and tags in parallel
-    const [dealsRes, notesRes, tagsRes] = await Promise.all([
-      supabase
-        .from("deals")
-        .select("*, stage:pipeline_stages(*)")
-        .eq("contact_id", contact.id)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("contact_notes")
-        .select("*")
-        .eq("contact_id", contact.id)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("contact_tags")
-        .select("id, tag_id, tags(*)")
-        .eq("contact_id", contact.id),
-    ]);
+      if (detailRes.ok) {
+        const detail = (await detailRes.json()) as {
+          notes: ContactNote[];
+          deals: Deal[];
+        };
+        setDeals(detail.deals ?? []);
+        setNotes(detail.notes ?? []);
+      }
 
-    if (dealsRes.data) setDeals(dealsRes.data);
-    if (notesRes.data) setNotes(notesRes.data);
-    if (tagsRes.data) {
-      const mapped = tagsRes.data
-        .filter((ct: Record<string, unknown>) => ct.tags)
-        .map((ct: Record<string, unknown>) => ({
-          ...(ct.tags as Tag),
-          contact_tag_id: ct.id as string,
-        }));
-      setTags(mapped);
+      if (contactTagsRes.ok && tagsRes.ok) {
+        const { contactTags } = (await contactTagsRes.json()) as {
+          contactTags: { id: string; tag_id: string }[];
+        };
+        const { tags: allTags } = (await tagsRes.json()) as { tags: Tag[] };
+        const tagById = new Map(allTags.map((t) => [t.id, t]));
+        const mapped = contactTags
+          .map((ct) => {
+            const tag = tagById.get(ct.tag_id);
+            return tag ? { ...tag, contact_tag_id: ct.id } : null;
+          })
+          .filter((t): t is Tag & { contact_tag_id: string } => t !== null);
+        setTags(mapped);
+      }
+    } catch (err) {
+      console.error("Failed to fetch contact sidebar data:", err);
     }
   }, [contact]);
 
@@ -95,28 +100,20 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
     if (!accountId) return;
     setAddingNote(true);
 
-    const supabase = createClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    const user = session?.user;
-
-    const { data, error } = await supabase
-      .from("contact_notes")
-      .insert({
-        contact_id: contact.id,
-        account_id: accountId,
-        user_id: user?.id,
-        note_text: newNote.trim(),
-      })
-      .select()
-      .single();
-
-    if (!error && data) {
-      setNotes((prev) => [data, ...prev]);
-      setNewNote("");
+    try {
+      const res = await fetch(`/api/contacts/${contact.id}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note_text: newNote.trim() }),
+      });
+      if (res.ok) {
+        const { note } = (await res.json()) as { note: ContactNote };
+        setNotes((prev) => [note, ...prev]);
+        setNewNote("");
+      }
+    } finally {
+      setAddingNote(false);
     }
-    setAddingNote(false);
   }, [contact, newNote, accountId]);
 
   if (!contact) {
