@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
 import { Broadcast } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -71,14 +70,12 @@ export default function BroadcastsPage() {
 
   async function fetchBroadcasts() {
     try {
-      const supabase = createClient();
-      const { data, error: fetchError } = await supabase
-        .from('broadcasts')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (fetchError) throw fetchError;
-      setBroadcasts(data ?? []);
+      const res = await fetch('/api/broadcasts', { cache: 'no-store' });
+      if (!res.ok) throw new Error(t('errorLoad'));
+      const { broadcasts: loaded } = (await res.json()) as {
+        broadcasts: Broadcast[];
+      };
+      setBroadcasts(loaded ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('errorLoad'));
     } finally {

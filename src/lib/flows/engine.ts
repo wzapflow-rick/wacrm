@@ -299,7 +299,7 @@ async function isDuplicateInbound(
     .eq("account_id", accountId)
     .eq("contact_id", contactId);
   if (!runs?.length) return false;
-  const runIds = runs.map((r) => (r as { id: string }).id);
+  const runIds = runs.map((r: { id: string }) => r.id);
 
   const { count } = await db
     .from("flow_run_events")

@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { createClient } from '@/lib/supabase/client';
 import { MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Loader2, FileText, ArrowRight } from 'lucide-react';
@@ -29,18 +28,17 @@ export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack
   useEffect(() => {
     async function fetchTemplates() {
       try {
-        const supabase = createClient();
         // Only APPROVED templates can be sent via Meta — anything else
-        // would 400 at broadcast time. Hide them rather than letting
-        // the user pick a template that will fail.
-        const { data, error: fetchError } = await supabase
-          .from('message_templates')
-          .select('*')
-          .eq('status', 'APPROVED')
-          .order('created_at', { ascending: false });
-
-        if (fetchError) throw fetchError;
-        setTemplates(data ?? []);
+        // would 400 at broadcast time. The endpoint returns the account's
+        // APPROVED templates so any teammate can broadcast them.
+        const res = await fetch('/api/whatsapp/templates/approved', {
+          cache: 'no-store',
+        });
+        if (!res.ok) throw new Error(t('chooseTemplate.errorLoad'));
+        const { templates: loaded } = (await res.json()) as {
+          templates: MessageTemplate[];
+        };
+        setTemplates(loaded ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : t('chooseTemplate.errorLoad'));
       } finally {

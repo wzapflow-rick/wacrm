@@ -1,17 +1,14 @@
-import { createClient } from "@/lib/supabase/client";
-
 /**
- * Shared media-upload helper for Supabase Storage buckets that use the
- * account-scoped path convention introduced in migration 020
- * (`flow-media`) and reused by migration 023 (`chat-media`):
+ * Shared media-upload helper. Uploads now go through the server route
+ * `/api/storage/upload`, which writes to MinIO (S3-compatible) using the
+ * account-scoped path convention:
  *
  *   <bucket>/account-<account_id>/<timestamp>-<basename>.<ext>
  *
- * The first path segment (`account-<uuid>`) is what the bucket's RLS
- * write policies match on, so every caller MUST go through here rather
- * than hand-rolling a path — a mismatched segment is silently rejected
- * by RLS. Both the Flows builder (`node-config-form`) and the inbox
- * composer call this so the logic lives in exactly one place.
+ * The first path segment (`account-<uuid>`) scopes objects per account;
+ * the server derives it from the authenticated session, so the browser
+ * never chooses it. Both the Flows builder (`node-config-form`) and the
+ * inbox composer call this so the logic lives in exactly one place.
  */
 
 /** 16 MB — matches the `file_size_limit` on both buckets (migrations 016/020/023). */
@@ -80,40 +77,22 @@ export async function uploadAccountMedia(
   bucket: string,
   file: File,
 ): Promise<UploadAccountMediaResult> {
-  const supabase = createClient();
+  // The server resolves the account from the session and builds the
+  // account-scoped path — the browser only sends the bucket + file.
+  const form = new FormData();
+  form.append("bucket", bucket);
+  form.append("file", file);
 
-  const {
-    data: { user },
-    error: userErr,
-  } = await supabase.auth.getUser();
-  if (userErr || !user) {
-    throw new Error("Not signed in.");
-  }
-
-  // Resolve account_id so the path is account-scoped (matches the
-  // bucket's RLS write policy from migration 020/023). User-scoped
-  // paths would be rejected.
-  const { data: profile, error: profileErr } = await supabase
-    .from("profiles")
-    .select("account_id")
-    .eq("user_id", user.id)
-    .maybeSingle();
-  if (profileErr || !profile?.account_id) {
-    throw new Error("Could not resolve your account.");
-  }
-
-  const path = buildMediaPath(profile.account_id as string, file.name);
-  const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
-    cacheControl: "3600",
-    upsert: false,
-    contentType: file.type,
+  const res = await fetch("/api/storage/upload", {
+    method: "POST",
+    body: form,
   });
-  if (upErr) throw new Error(upErr.message);
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? "Upload failed.");
+  }
 
-  const {
-    data: { publicUrl },
-  } = supabase.storage.from(bucket).getPublicUrl(path);
-
+  const { publicUrl, path } = (await res.json()) as UploadAccountMediaResult;
   return { publicUrl, path };
 }
 
@@ -131,7 +110,13 @@ export async function deleteAccountMedia(
   bucket: string,
   path: string,
 ): Promise<void> {
-  const supabase = createClient();
-  const { error } = await supabase.storage.from(bucket).remove([path]);
-  if (error) throw new Error(error.message);
+  const res = await fetch("/api/storage/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bucket, path }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? "Delete failed.");
+  }
 }

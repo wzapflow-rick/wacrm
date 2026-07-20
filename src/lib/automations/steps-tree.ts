@@ -83,7 +83,9 @@ export async function insertSteps(
   walk(tree, null, null)
 
   if (rows.length === 0) return null
-  const { error } = await supabaseAdmin().from('automation_steps').insert(rows)
+  const { error } = await supabaseAdmin()
+    .from('automation_steps')
+    .insert(rows as unknown as Record<string, unknown>[])
   return error?.message ?? null
 }
 

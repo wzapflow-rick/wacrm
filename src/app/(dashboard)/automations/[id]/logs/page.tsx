@@ -39,24 +39,16 @@ export default function AutomationLogsPage({
   useEffect(() => {
     async function load() {
       try {
-        const supabase = createClient()
-        const [autRes, logRes] = await Promise.all([
-          supabase
-            .from("automations")
-            .select("*")
-            .eq("id", id)
-            .maybeSingle(),
-          supabase
-            .from("automation_logs")
-            .select("*, contact:contacts(id, name, phone)")
-            .eq("automation_id", id)
-            .order("created_at", { ascending: false })
-            .limit(100),
-        ])
-        if (autRes.error) throw autRes.error
-        if (logRes.error) throw logRes.error
-        setAutomation(autRes.data as Automation | null)
-        setLogs((logRes.data ?? []) as AutomationLog[])
+        const res = await fetch(`/api/automations/${id}/logs`, {
+          cache: "no-store",
+        })
+        if (!res.ok) throw new Error(t("loadError"))
+        const { automation: aut, logs: loaded } = (await res.json()) as {
+          automation: Automation | null
+          logs: AutomationLog[]
+        }
+        setAutomation(aut)
+        setLogs(loaded ?? [])
       } catch (err) {
         setError(err instanceof Error ? err.message : t("loadError"))
       }

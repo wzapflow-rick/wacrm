@@ -229,10 +229,12 @@ export async function createBroadcast(
   // Pair each inserted recipient row back to its phone/params by
   // contact_id — unambiguous now that duplicates are collapsed.
   const byContact = new Map(deduped.map((r) => [r.contactId, r]));
-  const planned: PlannedRecipient[] = recipientRows.map((row) => {
-    const r = byContact.get(row.contact_id as string)!;
-    return { recipientRowId: row.id as string, phone: r.phone, params: r.params };
-  });
+  const planned: PlannedRecipient[] = recipientRows.map(
+    (row: { id: string; contact_id: string }) => {
+      const r = byContact.get(row.contact_id)!;
+      return { recipientRowId: row.id, phone: r.phone, params: r.params };
+    },
+  );
 
   return {
     broadcastId: broadcast.id,

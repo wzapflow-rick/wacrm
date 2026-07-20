@@ -21,6 +21,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { DbClient as SupabaseClient } from '@/lib/db/client';
+import { query } from '@/lib/db/pool';
 
 import { decrypt } from '@/lib/whatsapp/encryption';
 import { buildSignatureHeader } from '@/lib/webhooks/sign';
@@ -50,14 +51,18 @@ export async function dispatchWebhookEvent(
   data: unknown
 ): Promise<void> {
   try {
-    const { data: rows, error } = await db
-      .from('webhook_endpoints')
-      .select('id, url, secret')
-      .eq('account_id', accountId)
-      .eq('is_active', true)
-      .contains('events', [event]);
+    // `events` is a Postgres text[]; the array-contains operator (@>) has no
+    // query-builder shim equivalent, so this uses a raw parameterized query.
+    const rows = await query<EndpointRow>(
+      `SELECT id, url, secret
+         FROM webhook_endpoints
+        WHERE account_id = $1
+          AND is_active = true
+          AND events @> ARRAY[$2]::text[]`,
+      [accountId, event],
+    );
 
-    if (error || !rows || rows.length === 0) return;
+    if (rows.length === 0) return;
 
     // Sign the exact bytes we send so a receiver can recompute the
     // HMAC over the raw request body. `id` is a per-delivery uuid the
