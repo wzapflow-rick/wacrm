@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Loader2, Upload, Trash2, Mail, CircleAlert } from 'lucide-react';
 
-import { createClient } from '@/lib/supabase/client';
+import { authClient } from '@/lib/auth/auth-client';
+import { updateProfile } from '@/app/actions/settings';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,7 +35,6 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export function ProfileForm() {
   const t = useTranslations('Settings.profile');
   const { user, profile, refreshProfile } = useAuth();
-  const supabase = createClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [fullName, setFullName] = useState('');
@@ -114,74 +114,50 @@ export function ProfileForm() {
 
     setSaving(true);
     try {
-      let nextAvatarUrl: string | null = profile.avatar_url ?? null;
+      // Name + avatar are persisted by a server action (scoped to the session
+      // user; avatar uploaded to MinIO server-side). We pass the staged file
+      // and remove-flag via FormData.
+      const fd = new FormData();
+      fd.set('fullName', trimmedName);
+      if (pendingAvatar) fd.set('avatar', pendingAvatar);
+      if (removeAvatar) fd.set('removeAvatar', 'true');
 
-      // Upload a newly-staged image, if any.
-      if (pendingAvatar) {
-        const ext =
-          pendingAvatar.name.split('.').pop()?.toLowerCase() || 'png';
-        const path = `${user.id}/avatar-${Date.now()}.${ext}`;
-        const { error: uploadError } = await supabase.storage
-          .from('avatars')
-          .upload(path, pendingAvatar, {
-            cacheControl: '3600',
-            upsert: true,
-            contentType: pendingAvatar.type,
-          });
-        if (uploadError) {
-          throw new Error(t('uploadFailed', { message: uploadError.message }));
-        }
-        const {
-          data: { publicUrl },
-        } = supabase.storage.from('avatars').getPublicUrl(path);
-        nextAvatarUrl = publicUrl;
-      } else if (removeAvatar) {
-        nextAvatarUrl = null;
+      const result = await updateProfile(fd);
+      if (!result.ok) {
+        throw new Error(t('saveFailed', { message: result.error ?? '' }));
       }
 
-      // Persist name + avatar to profiles.
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          full_name: trimmedName,
-          avatar_url: nextAvatarUrl,
-        })
-        .eq('user_id', user.id);
-      if (updateError) {
-        throw new Error(t('saveFailed', { message: updateError.message }));
-      }
-
-      // Email change goes through Supabase Auth, which emails a
-      // confirmation to both the old and new addresses. We don't
-      // touch profiles.email — Supabase will push the change there
-      // after the user clicks the link (handled by the handle_new_user
-      // trigger pattern in production deployments).
-      let emailSent = false;
+      // Email change goes through Better Auth. With email verification
+      // disabled, changeEmail updates the address immediately; if a
+      // verification flow is later enabled it will send a confirmation.
+      let emailChanged = false;
       if (trimmedEmail.toLowerCase() !== profile.email.toLowerCase()) {
-        const { error: emailError } = await supabase.auth.updateUser({
-          email: trimmedEmail,
+        const { error: emailError } = await authClient.changeEmail({
+          newEmail: trimmedEmail,
         });
         if (emailError) {
           // Partial success: name/avatar saved but email didn't.
           toast.success(t('profileSaved'));
-          toast.error(t('emailChangeFailed', { message: emailError.message }));
+          toast.error(
+            t('emailChangeFailed', {
+              message: emailError.message ?? 'Unknown error',
+            }),
+          );
           setSaving(false);
           await refreshProfile();
           return;
         }
-        emailSent = true;
+        emailChanged = true;
       }
 
-      setEmailChangePending(emailSent);
+      setEmailChangePending(emailChanged);
       setPendingAvatar(null);
       setPreviewUrl(null);
       setRemoveAvatar(false);
       await refreshProfile();
 
       toast.success(
-        emailSent
-          ? t('profileSavedEmailCheck')
-          : t('profileSaved'),
+        emailChanged ? t('profileSavedEmailCheck') : t('profileSaved'),
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import { Loader2, KeyRound } from 'lucide-react';
 
-import { createClient } from '@/lib/supabase/client';
+import { authClient } from '@/lib/auth/auth-client';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,7 +23,6 @@ const MIN_PASSWORD = 8;
 export function PasswordForm() {
   const t = useTranslations('Settings.profile');
   const { profile } = useAuth();
-  const supabase = createClient();
 
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -49,24 +48,24 @@ export function PasswordForm() {
     setSaving(true);
 
     try {
-      // Supabase doesn't expose a "verify password without issuing a
-      // session" API, so we re-authenticate with the provided current
-      // password. If it matches, the session refreshes silently; if it
-      // doesn't, we abort before calling updateUser.
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: profile.email,
-        password: current,
+      // Better Auth verifies the current password server-side and rotates it
+      // in one call. revokeOtherSessions signs out other devices on change.
+      const { error } = await authClient.changePassword({
+        currentPassword: current,
+        newPassword: next,
+        revokeOtherSessions: true,
       });
-      if (signInError) {
-        toast.error(t('currentPasswordIncorrect'));
-        return;
-      }
-
-      const { error: updateError } = await supabase.auth.updateUser({
-        password: next,
-      });
-      if (updateError) {
-        toast.error(t('passwordUpdateFailed', { message: updateError.message }));
+      if (error) {
+        // 401/400 from Better Auth means the current password was wrong.
+        if (error.status === 401 || error.status === 400) {
+          toast.error(t('currentPasswordIncorrect'));
+        } else {
+          toast.error(
+            t('passwordUpdateFailed', {
+              message: error.message ?? 'Unknown error',
+            }),
+          );
+        }
         return;
       }
 

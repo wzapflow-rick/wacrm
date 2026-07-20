@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import { Loader2, LogOut } from 'lucide-react';
 
-import { createClient } from '@/lib/supabase/client';
+import { authClient } from '@/lib/auth/auth-client';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -25,21 +25,23 @@ import { useTranslations } from 'next-intl';
 
 export function SessionsCard() {
   const t = useTranslations('Settings.profile');
-  const supabase = createClient();
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
   const onConfirm = async () => {
     setSigningOut(true);
     try {
-      // scope: 'global' revokes every refresh token for this user
-      // across all devices; the next auth-state change on this tab
-      // triggers the usual redirect.
-      const { error } = await supabase.auth.signOut({ scope: 'global' });
+      // Revoke every session for this user (all devices), then end the
+      // current one and redirect. revokeSessions invalidates all refresh
+      // tokens; signOut clears this tab's cookie.
+      const { error } = await authClient.revokeSessions();
       if (error) {
-        toast.error(t('signOutFailed', { message: error.message }));
+        toast.error(
+          t('signOutFailed', { message: error.message ?? 'Unknown error' }),
+        );
         return;
       }
+      await authClient.signOut();
       window.location.href = '/login';
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
