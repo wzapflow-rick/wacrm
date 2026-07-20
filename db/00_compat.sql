@@ -25,6 +25,46 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ------------------------------------------------------------
+-- Supabase roles (so the migrations' GRANT ... TO <role> succeed)
+-- ------------------------------------------------------------
+-- The migrations GRANT privileges to anon / authenticated / service_role and
+-- set some function owners to postgres. On a stock Postgres these roles don't
+-- exist, so we create them as NOLOGIN placeholders. They carry no privileges
+-- of their own — real isolation is enforced in the application layer. The
+-- role the app actually connects as (table OWNER / superuser) bypasses RLS,
+-- so these roles never gate a real query.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    CREATE ROLE anon NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE ROLE authenticated NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    CREATE ROLE service_role NOLOGIN BYPASSRLS;
+  END IF;
+  -- Let the connecting role assume these so ALTER ... OWNER TO / SET ROLE work
+  -- even when the app connects as a non-superuser table owner.
+  EXECUTE format('GRANT anon, authenticated, service_role TO %I', current_user);
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'Could not grant placeholder roles to %; run this file as a superuser.', current_user;
+END $$;
+
+-- ------------------------------------------------------------
+-- Realtime publication (so ALTER PUBLICATION supabase_realtime ... succeeds)
+-- ------------------------------------------------------------
+-- Supabase ships a publication named supabase_realtime that the migrations add
+-- tables to. We create an empty one; nothing consumes it (realtime is replaced
+-- by application-level polling), but its presence keeps the migrations valid.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    CREATE PUBLICATION supabase_realtime;
+  END IF;
+END $$;
+
+-- ------------------------------------------------------------
 -- auth schema (replacement for Supabase Auth)
 -- ------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS auth;

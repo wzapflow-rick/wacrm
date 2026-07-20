@@ -43,6 +43,12 @@ function createPool(): Pool {
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
     ssl: wantsSsl ? { rejectUnauthorized } : undefined,
+    // Resolve unqualified table names against public first, then auth. The
+    // query-builder shim targets public tables; Better Auth's user model is
+    // mapped to `users`, which resolves to `auth.users` via this search_path
+    // (the auth schema is created by db/00_compat.sql). Better Auth's own
+    // session/account/verification tables live in public.
+    options: '-c search_path=public,auth',
   })
 }
 
