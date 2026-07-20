@@ -2,8 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
-import { useAuth } from "@/hooks/use-auth";
 import type { Notification } from "@/types";
 import { Bell, CheckCheck, Loader2, UserPlus } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -19,7 +17,6 @@ const TYPE_ICON: Record<Notification["type"], typeof Bell> = {
 
 export default function NotificationsPage() {
   const router = useRouter();
-  const { accountId } = useAuth();
   const [notifications, setNotifications] = useState<Notification[] | null>(
     null,
   );
@@ -121,13 +118,13 @@ export default function NotificationsPage() {
     setNotifications(
       (prev) => prev?.map((n) => (n.read_at ? n : { ...n, read_at: now })) ?? prev,
     );
-    const supabase = createClient();
-    const { error: updateErr } = await supabase
-      .from("notifications")
-      .update({ read_at: now })
-      .is("read_at", null);
+    const res = await fetch("/api/notifications", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ all: true }),
+    });
     setMarkingAll(false);
-    if (updateErr) {
+    if (!res.ok) {
       toast.error("Failed to mark all as read");
       load();
     }
