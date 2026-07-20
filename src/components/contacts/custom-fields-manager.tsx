@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { toast } from 'sonner';
 import type { CustomField } from '@/types';
@@ -56,7 +55,6 @@ export function CustomFieldsManager({
  */
 export function CustomFieldsPanel() {
   const t = useTranslations('Contacts.customFields');
-  const supabase = createClient();
   const { user, accountId } = useAuth();
 
   const [fields, setFields] = useState<CustomField[]>([]);
@@ -68,13 +66,13 @@ export function CustomFieldsPanel() {
   const fetchFields = useCallback(async () => {
     if (!accountId) return;
     setLoading(true);
-    const { data } = await supabase
-      .from('custom_fields')
-      .select('*')
-      .order('field_name');
-    setFields((data as CustomField[] | null) ?? []);
+    const res = await fetch('/api/custom-fields', { cache: 'no-store' });
+    if (res.ok) {
+      const json = await res.json();
+      setFields((json.fields as CustomField[]) ?? []);
+    }
     setLoading(false);
-  }, [supabase, accountId]);
+  }, [accountId]);
 
   // Load the field list on mount once the account is known. The setters
   // inside fetchFields run after the Supabase await — not synchronously in
@@ -107,15 +105,14 @@ export function CustomFieldsPanel() {
     }
 
     setCreating(true);
-    const { error } = await supabase.from('custom_fields').insert({
-      field_name: name,
-      field_type: 'text',
-      user_id: user.id,
-      account_id: accountId,
+    const res = await fetch('/api/custom-fields', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field_name: name }),
     });
     setCreating(false);
 
-    if (error) {
+    if (!res.ok) {
       toast.error(t('toastCreateFailed'));
       return;
     }
@@ -137,12 +134,13 @@ export function CustomFieldsPanel() {
       return false;
     }
     setBusyId(field.id);
-    const { error } = await supabase
-      .from('custom_fields')
-      .update({ field_name: name })
-      .eq('id', field.id);
+    const res = await fetch(`/api/custom-fields/${field.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field_name: name }),
+    });
     setBusyId(null);
-    if (error) {
+    if (!res.ok) {
       toast.error(t('toastRenameFailed'));
       return false;
     }
@@ -159,12 +157,11 @@ export function CustomFieldsPanel() {
       return;
     }
     setBusyId(field.id);
-    const { error } = await supabase
-      .from('custom_fields')
-      .delete()
-      .eq('id', field.id);
+    const res = await fetch(`/api/custom-fields/${field.id}`, {
+      method: 'DELETE',
+    });
     setBusyId(null);
-    if (error) {
+    if (!res.ok) {
       toast.error(t('toastDeleteFailed'));
       return;
     }

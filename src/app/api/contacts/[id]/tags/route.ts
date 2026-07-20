@@ -1,14 +1,39 @@
 import { NextResponse } from 'next/server';
 
-import { requireRole, toErrorResponse } from '@/lib/auth/account';
+import { getCurrentAccount, requireRole, toErrorResponse } from '@/lib/auth/account';
 import { addContactTagAndDispatch } from '@/lib/contacts/tag-events';
 import {
   ContactTagWriteError,
   removeContactTag,
 } from '@/lib/contacts/tag-write';
+import { query } from '@/lib/db/pool';
 
 function tagWriteErrorResponse(error: ContactTagWriteError): NextResponse {
   return NextResponse.json({ error: error.message }, { status: error.status });
+}
+
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const ctx = await getCurrentAccount();
+    const { id: contactId } = await params;
+
+    // Join through contacts to enforce the account scope: a contact id from
+    // another account returns zero rows rather than leaking its tag links.
+    const rows = await query<{ id: string; contact_id: string; tag_id: string }>(
+      `SELECT ct.id, ct.contact_id, ct.tag_id
+         FROM contact_tags ct
+         JOIN contacts c ON c.id = ct.contact_id
+        WHERE ct.contact_id = $1 AND c.account_id = $2`,
+      [contactId, ctx.accountId]
+    );
+
+    return NextResponse.json({ contactTags: rows });
+  } catch (err) {
+    return toErrorResponse(err);
+  }
 }
 
 async function readTagId(request: Request): Promise<string | null> {

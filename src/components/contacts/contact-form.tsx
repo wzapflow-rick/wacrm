@@ -1,15 +1,12 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { addContactTag, deleteContactTag } from '@/lib/contacts/tag-api';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag } from '@/types';
 import {
-  findExistingContact,
   isExactMatch,
-  isUniqueViolation,
   type ExistingContact,
 } from '@/lib/contacts/dedupe';
 import {
@@ -47,7 +44,6 @@ export function ContactForm({
   onViewExisting,
 }: ContactFormProps) {
   const t = useTranslations('Contacts.form');
-  const supabase = createClient();
   const { accountId } = useAuth();
   const isEdit = !!contact;
 
@@ -93,7 +89,12 @@ export function ContactForm({
     }
     setCheckingDup(true);
     try {
-      const existing = await findExistingContact(supabase, accountId, value);
+      const res = await fetch(
+        `/api/contacts/check-duplicate?phone=${encodeURIComponent(value)}`,
+        { cache: 'no-store' },
+      );
+      const json = res.ok ? await res.json() : { existing: null };
+      const existing = json.existing as ExistingContact | null;
       setDupMatch(
         existing
           ? { contact: existing, exact: isExactMatch(existing, value) }
@@ -106,11 +107,14 @@ export function ContactForm({
 
   async function fetchTags() {
     setLoadingTags(true);
-    const { data } = await supabase
-      .from('tags')
-      .select('*')
-      .order('name');
-    if (data) setTags(data);
+    const res = await fetch('/api/tags', { cache: 'no-store' });
+    if (res.ok) {
+      const json = await res.json();
+      const data = ((json.tags as Tag[]) ?? []).slice().sort((a, b) =>
+        a.name.localeCompare(b.name),
+      );
+      setTags(data);
+    }
     setLoadingTags(false);
   }
 
@@ -140,42 +144,51 @@ export function ContactForm({
     setSaving(true);
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const user = session?.user;
-      if (!user) throw new Error('Not authenticated');
       if (!accountId) throw new Error('Your profile is not linked to an account.');
+
+      const payload = {
+        name: name.trim() || null,
+        phone: phone.trim(),
+        email: email.trim() || null,
+        company: company.trim() || null,
+      };
 
       let contactId = contact?.id;
 
-      if (isEdit && contactId) {
-        const { error } = await supabase
-          .from('contacts')
-          .update({
-            name: name.trim() || null,
-            phone: phone.trim(),
-            email: email.trim() || null,
-            company: company.trim() || null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', contactId);
-        if (error) throw error;
-      } else {
-        const { data, error } = await supabase
-          .from('contacts')
-          .insert({
-            user_id: user.id,
-            account_id: accountId,
-            name: name.trim() || null,
-            phone: phone.trim(),
-            email: email.trim() || null,
-            company: company.trim() || null,
-          })
-          .select('id')
-          .single();
-        if (error) throw error;
-        contactId = data.id;
+      const res =
+        isEdit && contactId
+          ? await fetch(`/api/contacts/${contactId}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            })
+          : await fetch('/api/contacts', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          existing?: ExistingContact | null;
+        };
+        // 409 = the DB unique index (per-account phone) rejected a duplicate
+        // that slipped past the on-blur check. Surface the friendly notice
+        // and, for new contacts, point the user at the existing record.
+        if (res.status === 409) {
+          toast.error(t('toastConflict'));
+          if (!isEdit && body.existing) {
+            setDupMatch({ contact: body.existing, exact: true });
+          }
+          return;
+        }
+        throw new Error(body.error ?? t('toastError'));
+      }
+
+      if (!isEdit) {
+        const body = (await res.json()) as { contact: { id: string } };
+        contactId = body.contact.id;
       }
 
       // Sync tags
@@ -197,22 +210,6 @@ export function ContactForm({
       onOpenChange(false);
       onSaved();
     } catch (err: unknown) {
-      // The unique index (migration 022) rejects a duplicate phone that
-      // slipped past the on-blur check (race, or a format that
-      // normalizes equal). Surface it as the friendly duplicate notice
-      // and, for new contacts, point the user at the existing record.
-      if (isUniqueViolation(err)) {
-        toast.error(t('toastConflict'));
-        if (!isEdit && accountId) {
-          const existing = await findExistingContact(
-            supabase,
-            accountId,
-            phone.trim(),
-          );
-          if (existing) setDupMatch({ contact: existing, exact: true });
-        }
-        return;
-      }
       const message = err instanceof Error ? err.message : t('toastError');
       toast.error(message);
     } finally {
