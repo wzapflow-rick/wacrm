@@ -1,4 +1,4 @@
-import type { SupabaseClient } from '@supabase/supabase-js'
+import type { DbClient as SupabaseClient } from '@/lib/db/client'
 import type { ChatMessage } from './types'
 import { aiContextMessageLimit } from './defaults'
 

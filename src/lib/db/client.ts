@@ -9,16 +9,20 @@
 import { PgQueryBuilder, PgRpcBuilder } from './query-builder'
 
 export interface DbClient {
-  from<T = unknown>(table: string): PgQueryBuilder<T>
-  rpc<T = unknown>(fn: string, args?: Record<string, unknown>): PgRpcBuilder<T>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  from<T = any>(table: string): PgQueryBuilder<T>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rpc<T = any>(fn: string, args?: Record<string, unknown>): PgRpcBuilder<T>
 }
 
 export function createDbClient(): DbClient {
   return {
-    from<T = unknown>(table: string) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    from<T = any>(table: string) {
       return new PgQueryBuilder<T>(table)
     },
-    rpc<T = unknown>(fn: string, args: Record<string, unknown> = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rpc<T = any>(fn: string, args: Record<string, unknown> = {}) {
       return new PgRpcBuilder<T>(fn, args)
     },
   }

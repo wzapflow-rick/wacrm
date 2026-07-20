@@ -28,7 +28,8 @@ export interface PostgrestError {
   details?: string
 }
 
-export interface PostgrestResult<T = unknown> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface PostgrestResult<T = any> {
   data: T | null
   error: PostgrestError | null
   count?: number | null
@@ -300,7 +301,8 @@ interface OrderSpec {
   nullsFirst?: boolean
 }
 
-export class PgQueryBuilder<T = unknown>
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export class PgQueryBuilder<T = any>
   implements PromiseLike<PostgrestResult<T>>
 {
   private op: Operation = 'select'
@@ -636,7 +638,8 @@ export class PgQueryBuilder<T = unknown>
 // rpc builder
 // ------------------------------------------------------------------
 
-export class PgRpcBuilder<T = unknown>
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export class PgRpcBuilder<T = any>
   implements PromiseLike<PostgrestResult<T>>
 {
   private filters: Filter[] = []

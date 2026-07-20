@@ -1,4 +1,4 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient as SupabaseClient } from '@/lib/db/client';
 
 export class ContactTagWriteError extends Error {
   readonly status: number;

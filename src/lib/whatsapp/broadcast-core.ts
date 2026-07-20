@@ -16,7 +16,7 @@
 // for API broadcasts exactly as it does for dashboard ones.
 // ============================================================
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient as SupabaseClient } from '@/lib/db/client';
 
 import { sendTemplateMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';

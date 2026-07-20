@@ -1,5 +1,5 @@
 import { createBrowserClient } from '@supabase/ssr'
-import type { SupabaseClient } from '@supabase/supabase-js'
+import type { DbClient as SupabaseClient } from '@/lib/db/client'
 
 // Singleton instance — one client shared across the whole browser session.
 // Creating multiple clients causes auth-lock contention ("Lock was released

@@ -26,9 +26,8 @@
 // ============================================================
 
 import { NextResponse } from "next/server";
-import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { createClient } from "@/lib/supabase/server";
+import { createClient, type ServerClient } from "@/lib/supabase/server";
 import { hasMinRole, isAccountRole, type AccountRole } from "./roles";
 
 // ------------------------------------------------------------
@@ -79,8 +78,12 @@ export function toErrorResponse(err: unknown): NextResponse {
 // ------------------------------------------------------------
 
 export interface AccountContext {
-  /** Supabase SSR client, RLS scoped to the calling user. */
-  supabase: SupabaseClient;
+  /**
+   * Data + auth client (node-postgres shim). NOTE: unlike the old Supabase
+   * SSR client, this is NOT RLS-scoped — there is no RLS anymore. Routes MUST
+   * scope every query by `accountId` (below). See src/lib/supabase/server.ts.
+   */
+  supabase: ServerClient;
   /** `auth.uid()` for the caller. Always defined when this resolves. */
   userId: string;
   /** Caller's account_id from their profile row. */

@@ -18,7 +18,7 @@
 // them to the WhatsApp config owner — a stable account-level default.
 // ============================================================
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient as SupabaseClient } from '@/lib/db/client';
 
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';

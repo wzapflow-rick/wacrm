@@ -1,5 +1,5 @@
 import { NextResponse, after } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { createDbClient } from '@/lib/db/client'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
@@ -20,15 +20,15 @@ import {
 // plan's ceiling). Tune as needed.
 export const maxDuration = 60
 
-// Lazy-initialized to avoid build-time crash when env vars are missing
+// Unscoped data client for the inbound webhook (no user session). Previously a
+// Supabase service-role client; with RLS gone and the app connecting as the
+// table owner, the plain DbClient is the equivalent. Every query below is
+// scoped by account_id explicitly.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _adminClient: any = null
 function supabaseAdmin() {
   if (!_adminClient) {
-    _adminClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    )
+    _adminClient = createDbClient()
   }
   return _adminClient
 }

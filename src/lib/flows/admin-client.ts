@@ -1,16 +1,17 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { createDbClient, type DbClient } from '@/lib/db/client'
 
-// Lazy, shared service-role client for the Flows engine.
-// Mirrors src/lib/automations/admin-client.ts — same shape so anyone
-// reading either file picks up the convention immediately.
-let _adminClient: SupabaseClient | null = null
+// Shared "admin" data client for the Flows engine.
+//
+// Previously a Supabase service-role client (RLS-bypassing). There is no RLS
+// anymore, and the app connects to Postgres as the table owner, so the plain
+// unscoped DbClient is the equivalent: engine/webhook paths have no user
+// session, so they read config + state and write through this client and MUST
+// scope every query by account_id themselves (same discipline as before).
+let _adminClient: DbClient | null = null
 
-export function supabaseAdmin(): SupabaseClient {
+export function supabaseAdmin(): DbClient {
   if (!_adminClient) {
-    _adminClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    )
+    _adminClient = createDbClient()
   }
   return _adminClient
 }
