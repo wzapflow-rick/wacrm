@@ -1,11 +1,33 @@
 // ============================================================
+// GET   /api/contacts/[id] — consolidated detail read (agent+).
 // PATCH /api/contacts/[id] — update a contact (agent+). Account-scoped.
 // ============================================================
 import { NextResponse } from "next/server";
 
 import { requireRole, toErrorResponse } from "@/lib/auth/account";
-import { updateContact, findDuplicateContact } from "@/lib/contacts/queries";
+import {
+  updateContact,
+  findDuplicateContact,
+  getContactDetail,
+} from "@/lib/contacts/queries";
 import { isUniqueViolation } from "@/lib/contacts/dedupe";
+
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const ctx = await requireRole("agent");
+    const { id } = await params;
+    const detail = await getContactDetail(ctx.accountId, id);
+    if (!detail.contact) {
+      return NextResponse.json({ error: "Contact not found" }, { status: 404 });
+    }
+    return NextResponse.json(detail);
+  } catch (err) {
+    return toErrorResponse(err);
+  }
+}
 
 export async function PATCH(
   request: Request,

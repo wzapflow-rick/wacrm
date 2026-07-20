@@ -317,6 +317,7 @@ export class PgQueryBuilder<T = any>
   private wantMaybeSingle = false
   private mutationValues: Record<string, unknown>[] = []
   private conflictTarget?: string
+  private ignoreDuplicates = false
   private countMode?: string
   private headOnly = false
 
@@ -348,11 +349,12 @@ export class PgQueryBuilder<T = any>
 
   upsert(
     values: Record<string, unknown> | Record<string, unknown>[],
-    options?: { onConflict?: string }
+    options?: { onConflict?: string; ignoreDuplicates?: boolean }
   ): this {
     this.op = 'upsert'
     this.mutationValues = Array.isArray(values) ? values : [values]
     this.conflictTarget = options?.onConflict
+    this.ignoreDuplicates = options?.ignoreDuplicates ?? false
     return this
   }
 
@@ -546,9 +548,13 @@ export class PgQueryBuilder<T = any>
               .join(', ')
           : undefined
         if (conflict) {
-          const updates = columns
-            .filter((c) => !this.conflictTarget!.split(',').map((x) => x.trim()).includes(c))
-            .map((c) => `${quoteId(c)} = EXCLUDED.${quoteId(c)}`)
+          // ignoreDuplicates (Supabase parity) forces DO NOTHING even when
+          // there are non-conflict columns that could otherwise be updated.
+          const updates = this.ignoreDuplicates
+            ? []
+            : columns
+                .filter((c) => !this.conflictTarget!.split(',').map((x) => x.trim()).includes(c))
+                .map((c) => `${quoteId(c)} = EXCLUDED.${quoteId(c)}`)
           sql += ` ON CONFLICT (${conflict}) DO ${updates.length ? `UPDATE SET ${updates.join(', ')}` : 'NOTHING'}`
         } else {
           sql += ' ON CONFLICT DO NOTHING'

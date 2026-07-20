@@ -8,7 +8,13 @@
 import { query } from "@/lib/db/pool";
 import { normalizePhone, phonesMatch } from "@/lib/whatsapp/phone-utils";
 import type { ExistingContact } from "@/lib/contacts/dedupe";
-import type { Contact, Tag } from "@/types";
+import type {
+  Contact,
+  ContactNote,
+  CustomField,
+  Deal,
+  Tag,
+} from "@/types";
 
 export interface ContactWriteFields {
   name?: string | null;
@@ -200,4 +206,147 @@ export async function updateContact(
     ],
   );
   return updated.length > 0;
+}
+
+export interface ContactDetail {
+  contact: Contact | null;
+  tagIds: string[];
+  notes: ContactNote[];
+  customFields: CustomField[];
+  customValues: Record<string, string>;
+  deals: Deal[];
+}
+
+/**
+ * One consolidated, account-scoped read for the contact detail sheet: the
+ * contact itself, its tag ids, notes, the account's custom fields plus this
+ * contact's values, and its deals (with the stage object joined in). Returns
+ * `contact: null` when the id doesn't belong to the account.
+ */
+export async function getContactDetail(
+  accountId: string,
+  contactId: string,
+): Promise<ContactDetail> {
+  const contactRows = await query<Contact>(
+    `SELECT * FROM contacts WHERE id = $1 AND account_id = $2`,
+    [contactId, accountId],
+  );
+  const contact = contactRows[0] ?? null;
+  if (!contact) {
+    return {
+      contact: null,
+      tagIds: [],
+      notes: [],
+      customFields: [],
+      customValues: {},
+      deals: [],
+    };
+  }
+
+  const [tagRows, notes, customFields, valueRows, deals] = await Promise.all([
+    query<{ tag_id: string }>(
+      `SELECT tag_id FROM contact_tags WHERE contact_id = $1`,
+      [contactId],
+    ),
+    query<ContactNote>(
+      `SELECT * FROM contact_notes
+        WHERE contact_id = $1 AND account_id = $2
+        ORDER BY created_at DESC`,
+      [contactId, accountId],
+    ),
+    query<CustomField>(
+      `SELECT * FROM custom_fields WHERE account_id = $1 ORDER BY field_name`,
+      [accountId],
+    ),
+    // contact_custom_values has no account_id — scope via the contact join.
+    query<{ custom_field_id: string; value: string | null }>(
+      `SELECT ccv.custom_field_id, ccv.value
+         FROM contact_custom_values ccv
+         JOIN contacts c ON c.id = ccv.contact_id
+        WHERE ccv.contact_id = $1 AND c.account_id = $2`,
+      [contactId, accountId],
+    ),
+    query<Deal>(
+      `SELECT d.*, to_jsonb(s.*) AS stage
+         FROM deals d
+         LEFT JOIN pipeline_stages s ON s.id = d.stage_id
+        WHERE d.contact_id = $1 AND d.account_id = $2
+        ORDER BY d.created_at DESC`,
+      [contactId, accountId],
+    ),
+  ]);
+
+  const customValues: Record<string, string> = {};
+  for (const v of valueRows) customValues[v.custom_field_id] = v.value ?? "";
+
+  return {
+    contact,
+    tagIds: tagRows.map((r) => r.tag_id),
+    notes,
+    customFields,
+    customValues,
+    deals,
+  };
+}
+
+/** Add a note to a contact, scoped to the account. Returns the new row. */
+export async function addContactNote(
+  accountId: string,
+  userId: string,
+  contactId: string,
+  noteText: string,
+): Promise<ContactNote | null> {
+  // Guard: only insert when the contact belongs to the account.
+  const rows = await query<ContactNote>(
+    `INSERT INTO contact_notes (contact_id, account_id, user_id, note_text)
+     SELECT $1, $2, $3, $4
+      WHERE EXISTS (SELECT 1 FROM contacts WHERE id = $1 AND account_id = $2)
+     RETURNING *`,
+    [contactId, accountId, userId, noteText],
+  );
+  return rows[0] ?? null;
+}
+
+/** Delete a note, scoped to the account. Returns true if a row was removed. */
+export async function deleteContactNote(
+  accountId: string,
+  noteId: string,
+): Promise<boolean> {
+  const rows = await query<{ id: string }>(
+    `DELETE FROM contact_notes
+      WHERE id = $1 AND account_id = $2
+      RETURNING id`,
+    [noteId, accountId],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Replace all custom-field values for a contact (delete-then-insert), scoped
+ * to the account via the contact. `values` maps custom_field_id → value; empty
+ * values are dropped by the caller.
+ */
+export async function replaceContactCustomValues(
+  accountId: string,
+  contactId: string,
+  values: { fieldId: string; value: string }[],
+): Promise<void> {
+  // Verify ownership up front so we never touch another account's rows.
+  const owned = await query<{ id: string }>(
+    `SELECT id FROM contacts WHERE id = $1 AND account_id = $2`,
+    [contactId, accountId],
+  );
+  if (owned.length === 0) return;
+
+  await query(
+    `DELETE FROM contact_custom_values WHERE contact_id = $1`,
+    [contactId],
+  );
+  for (const { fieldId, value } of values) {
+    await query(
+      `INSERT INTO contact_custom_values (contact_id, custom_field_id, value)
+       VALUES ($1, $2, $3)`,
+      [contactId, fieldId, value],
+    );
+  }
 }
