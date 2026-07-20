@@ -53,39 +53,65 @@ export async function PATCH(request: Request) {
     if (!limit.success) return rateLimitResponse(limit);
 
     const body = (await request.json().catch(() => null)) as
-      | { name?: unknown }
+      | { name?: unknown; default_currency?: unknown }
       | null;
-    const rawName = body?.name;
 
-    if (typeof rawName !== "string") {
+    // Build the update from whatever recognized fields are present. Both are
+    // optional, but at least one must be provided.
+    const updates: { name?: string; default_currency?: string } = {};
+
+    if (body?.name !== undefined) {
+      if (typeof body.name !== "string") {
+        return NextResponse.json(
+          { error: "'name' must be a string" },
+          { status: 400 },
+        );
+      }
+      const name = body.name.trim();
+      if (name.length === 0) {
+        return NextResponse.json(
+          { error: "Account name cannot be empty" },
+          { status: 400 },
+        );
+      }
+      if (name.length > MAX_NAME_LEN) {
+        return NextResponse.json(
+          { error: `Account name must be ${MAX_NAME_LEN} characters or fewer` },
+          { status: 400 },
+        );
+      }
+      updates.name = name;
+    }
+
+    if (body?.default_currency !== undefined) {
+      // ISO 4217 codes are 3 uppercase letters.
+      if (
+        typeof body.default_currency !== "string" ||
+        !/^[A-Z]{3}$/.test(body.default_currency)
+      ) {
+        return NextResponse.json(
+          { error: "'default_currency' must be a 3-letter ISO code" },
+          { status: 400 },
+        );
+      }
+      updates.default_currency = body.default_currency;
+    }
+
+    if (Object.keys(updates).length === 0) {
       return NextResponse.json(
-        { error: "'name' must be a string" },
+        { error: "No recognized fields to update" },
         { status: 400 },
       );
     }
 
-    const name = rawName.trim();
-    if (name.length === 0) {
-      return NextResponse.json(
-        { error: "Account name cannot be empty" },
-        { status: 400 },
-      );
-    }
-    if (name.length > MAX_NAME_LEN) {
-      return NextResponse.json(
-        { error: `Account name must be ${MAX_NAME_LEN} characters or fewer` },
-        { status: 400 },
-      );
-    }
-
-    // RLS allows this UPDATE because accounts_update requires
-    // `is_account_member(id, 'admin')`, and requireRole already
-    // guaranteed the caller is admin+.
+    // No RLS anymore: scope the UPDATE to the caller's account explicitly.
+    // requireRole('admin') already guaranteed the caller is admin+ for this
+    // account, and .eq('id', ctx.accountId) is what confines the write.
     const { data, error } = await ctx.supabase
       .from("accounts")
-      .update({ name })
+      .update(updates)
       .eq("id", ctx.accountId)
-      .select("id, name")
+      .select("id, name, default_currency")
       .single();
 
     if (error) {
