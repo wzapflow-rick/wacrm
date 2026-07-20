@@ -1,0 +1,86 @@
+# ============================================================
+# ZapFlow CRM — deploy on the VPS
+# ============================================================
+# Adds two services to your existing stack:
+#   - crm_app   : the Next.js CRM (this repo)
+#   - crm_minio : S3-compatible storage for avatars + chat media
+#
+# Both join the SAME external network your Postgres is on
+# (zapflow_network), so the app reaches the database at the
+# internal hostname `postgres_main:5432` — no public internet,
+# no firewall, no TLS needed.
+#
+# Usage on the VPS (from this repo's folder):
+#   cp .env.docker.example .env.docker   # then fill in the values
+#   docker compose -f docker-compose.crm.yml --env-file .env.docker up -d --build
+# ============================================================
+
+services:
+  # ---- CRM (Next.js) ----
+  crm_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crm_app
+    restart: always
+    # Expose the app on host port 8090 (change the left side if taken).
+    # Put Nginx/your reverse proxy in front of this for HTTPS + domain.
+    ports:
+      - "8090:3000"
+    environment:
+      # ---- Database (internal Docker hostname, no SSL) ----
+      DATABASE_URL: ${DATABASE_URL}
+      # postgres:16 has no SSL configured, so we connect in plaintext over
+      # the private Docker network. Leaving sslmode out of DATABASE_URL keeps
+      # the pg driver from attempting a TLS handshake.
+
+      # ---- Better Auth ----
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL}
+
+      # ---- MinIO (storage) ----
+      MINIO_ENDPOINT: http://crm_minio:9000
+      MINIO_REGION: us-east-1
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET_AVATARS: avatars
+      MINIO_BUCKET_CHAT_MEDIA: chat-media
+      MINIO_BUCKET_FLOW_MEDIA: flow-media
+      # Public base URL the browser uses to load stored media. Point this at
+      # however you expose MinIO publicly (a subdomain via your reverse proxy).
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL}
+
+      # ---- WhatsApp / Meta (fill in as needed) ----
+      # These are read server-side by the webhook + send routes.
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+    depends_on:
+      - crm_minio
+    networks:
+      - zapflow_network
+
+  # ---- MinIO (S3-compatible storage) ----
+  crm_minio:
+    image: minio/minio:latest
+    container_name: crm_minio
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      # 9000 = S3 API, 9001 = web console. Expose only if you need them
+      # reachable from outside; the app talks to MinIO over the internal net.
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./volumes/minio:/data
+    networks:
+      - zapflow_network
+
+# The Postgres lives on an already-existing network created by your main
+# compose file. Marking it external means this file joins it instead of
+# creating a new one. Confirm the real name with: docker network ls
+networks:
+  zapflow_network:
+    external: true

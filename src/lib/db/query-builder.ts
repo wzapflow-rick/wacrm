@@ -356,8 +356,9 @@ export class PgQueryBuilder<T = any>
     return this
   }
 
-  delete(): this {
+  delete(options?: { count?: string }): this {
     this.op = 'delete'
+    if (options?.count) this.countMode = options.count
     return this
   }
 

@@ -50,12 +50,15 @@ const SECURITY_HEADERS = [
       // tiny inline assets.
       "img-src 'self' data: blob: https:",
       // Outbound media previews (blob: from MediaRecorder + file picker)
-      // and Supabase public-bucket audio/video the inbox renders.
-      "media-src 'self' blob: https://*.supabase.co",
+      // and the MinIO-served audio/video the inbox renders. MinIO is
+      // reached over https via the presigned URLs the server hands back.
+      "media-src 'self' blob: https:",
       "font-src 'self' data:",
-      // Supabase REST + realtime (WSS). All Meta API calls happen
+      // Same-origin only: data access goes through this app's own /api
+      // routes now (no external DB/realtime host). Media/uploads are
+      // proxied or presigned by the server. All Meta API calls happen
       // server-side, so graph.facebook.com does not belong here.
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+      "connect-src 'self' https:",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",
@@ -64,6 +67,16 @@ const SECURITY_HEADERS = [
 ] as const;
 
 const nextConfig: NextConfig = {
+  /**
+   * Standalone output for Docker.
+   *
+   * `next build` emits a self-contained `.next/standalone` folder with a
+   * minimal `server.js` and only the production node_modules it actually
+   * uses. The Dockerfile copies that instead of the whole repo, keeping the
+   * runtime image small (~200 MB) and startup fast on the VPS.
+   */
+  output: "standalone",
+
   /**
    * Cross-origin dev access (Next.js 16).
    *

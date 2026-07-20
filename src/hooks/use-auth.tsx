@@ -25,6 +25,8 @@ interface AuthUser {
   id: string;
   email: string;
   name?: string | null;
+  /** Account creation timestamp (ISO). Used by the profile "joined" line. */
+  created_at?: string | null;
 }
 
 interface Profile {
@@ -120,6 +122,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         id: session.user.id,
         email: session.user.email,
         name: session.user.name ?? null,
+        // Better Auth exposes createdAt on the session user (Date | string).
+        created_at:
+          session.user.createdAt instanceof Date
+            ? session.user.createdAt.toISOString()
+            : (session.user.createdAt ?? null),
       }
     : null;
 

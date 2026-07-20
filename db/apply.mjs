@@ -70,12 +70,21 @@ async function main() {
     process.exit(1);
   }
 
+  // SSL is opt-in, matching the app's runtime pool (src/lib/db/pool.ts):
+  // only negotiate TLS when the connection string explicitly asks for it
+  // (sslmode=require). A stock `postgres:16` container has NO SSL, so when
+  // running on the VPS against postgres_main over the private Docker network
+  // we connect in plaintext. Forcing ssl there would fail with
+  // "The server does not support SSL connections".
+  const wantsSsl = /[?&]sslmode=(require|verify-ca|verify-full)/.test(
+    connectionString,
+  );
   const rejectUnauthorized =
     process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false';
 
   const client = new pg.Client({
     connectionString,
-    ssl: { rejectUnauthorized },
+    ssl: wantsSsl ? { rejectUnauthorized } : false,
   });
 
   console.log('[v0] Connecting…');

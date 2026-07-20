@@ -50,10 +50,20 @@ function s3(): S3Client {
   return client
 }
 
-/** Public URL for an object, mirroring Supabase's `/object/public/...` shape. */
+/**
+ * Public URL for an object. The browser cannot reach the internal Docker
+ * hostname (MINIO_ENDPOINT, e.g. http://crm_minio:9000), so we build public
+ * URLs from MINIO_PUBLIC_URL — the externally-reachable address MinIO is
+ * exposed on (a subdomain via the reverse proxy). Falls back to the endpoint
+ * for local/dev where they're the same host.
+ */
 function publicUrlFor(bucket: string, path: string): string {
-  const endpoint = (process.env.MINIO_ENDPOINT ?? '').replace(/\/$/, '')
-  return `${endpoint}/${resolveBucket(bucket)}/${path}`
+  const base = (
+    process.env.MINIO_PUBLIC_URL ??
+    process.env.MINIO_ENDPOINT ??
+    ''
+  ).replace(/\/$/, '')
+  return `${base}/${resolveBucket(bucket)}/${path}`
 }
 
 interface UploadOptions {

@@ -14,7 +14,6 @@ import {
   AlertTriangle,
   RotateCcw,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
@@ -38,7 +37,6 @@ type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
 
 export function WhatsAppConfig() {
   const t = useTranslations('Settings.whatsapp');
-  const supabase = createClient();
   // After multi-user, whatsapp_config is one-row-per-account, not
   // one-row-per-user. We pull `accountId` straight off the auth
   // context and key every read off it — so a teammate who just
@@ -94,23 +92,25 @@ export function WhatsAppConfig() {
       ? `${window.location.origin}/api/whatsapp/webhook`
       : '';
 
-  const fetchConfig = useCallback(async (acctId: string) => {
+  const fetchConfig = useCallback(async (_acctId: string) => {
     setLoading(true);
     try {
-      // Load form values from Supabase (shows what's in DB).
-      // Switched from `user_id` (which would only match the row's
-      // original author) to `account_id` so every member of the
-      // account sees the same saved configuration. UNIQUE(account_id)
-      // on the table guarantees the .maybeSingle() return type
-      // remains accurate.
-      const { data, error } = await supabase
-        .from('whatsapp_config')
-        .select('*')
-        .eq('account_id', acctId)
-        .maybeSingle();
-
-      if (error) {
-        console.error('Failed to load config row:', error);
+      // Load form values from our own API (server reads Postgres, scoped to
+      // the caller's account). The encrypted access/verify tokens never leave
+      // the server — the form shows a masked placeholder when a row exists.
+      let data: WhatsAppConfigType | null = null;
+      try {
+        const res = await fetch('/api/whatsapp/config/row', {
+          cache: 'no-store',
+        });
+        const json = await res.json();
+        if (res.ok) {
+          data = (json.config as WhatsAppConfigType | null) ?? null;
+        } else {
+          console.error('Failed to load config row:', json.error);
+        }
+      } catch (err) {
+        console.error('Failed to load config row:', err);
       }
 
       if (data) {
@@ -163,7 +163,7 @@ export function WhatsAppConfig() {
     } finally {
       setLoading(false);
     }
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     // Need both the auth session (`!authLoading`) AND the profile
