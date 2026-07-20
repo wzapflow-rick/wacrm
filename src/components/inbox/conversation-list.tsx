@@ -1,12 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { createClient } from "@/lib/supabase/client";
-import {
-  CONVERSATION_SELECT,
-  matchesContactFilters,
-  normalizeConversations,
-} from "@/lib/inbox/conversations";
+import { matchesContactFilters } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
 import { Search, ChevronDown, X } from "lucide-react";
@@ -91,31 +86,27 @@ export function ConversationList({
   });
 
   useEffect(() => {
-    const supabase = createClient();
     let cancelled = false;
 
     (async () => {
-      const { data, error } = await supabase
-        .from("conversations")
-        .select(CONVERSATION_SELECT)
-        .order("last_message_at", { ascending: false });
-
-      if (cancelled) return;
-
-      if (error) {
-        // Supabase errors have non-enumerable properties — log fields explicitly
-        console.error("Failed to fetch conversations:", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        });
-        setLoading(false);
-        return;
+      try {
+        const res = await fetch("/api/conversations", { cache: "no-store" });
+        if (cancelled) return;
+        if (!res.ok) {
+          console.error("Failed to fetch conversations:", res.status);
+          setLoading(false);
+          return;
+        }
+        const { conversations: loaded } = (await res.json()) as {
+          conversations: Conversation[];
+        };
+        if (cancelled) return;
+        onConversationsLoadedRef.current(loaded ?? []);
+      } catch (err) {
+        if (!cancelled) console.error("Failed to fetch conversations:", err);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      onConversationsLoadedRef.current(normalizeConversations(data ?? []));
-      setLoading(false);
     })();
 
     return () => {
@@ -129,11 +120,16 @@ export function ConversationList({
   // Tag definitions for the filter picker — loaded once so labels/colours
   // stay stable regardless of which conversations happen to be loaded.
   useEffect(() => {
-    const supabase = createClient();
     let cancelled = false;
     (async () => {
-      const { data } = await supabase.from("tags").select("*").order("name");
-      if (!cancelled && data) setTags(data as Tag[]);
+      try {
+        const res = await fetch("/api/tags", { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const { tags: loaded } = (await res.json()) as { tags: Tag[] };
+        if (!cancelled && loaded) setTags(loaded);
+      } catch {
+        // Non-fatal: the tag filter just won't be offered.
+      }
     })();
     return () => {
       cancelled = true;

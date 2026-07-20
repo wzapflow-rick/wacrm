@@ -3,11 +3,6 @@
 import { Suspense, useState, useCallback, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { createClient } from "@/lib/supabase/client";
-import {
-  CONVERSATION_SELECT,
-  normalizeConversation,
-} from "@/lib/inbox/conversations";
 import type { Conversation, Message, Contact, ConversationStatus } from "@/types";
 import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
@@ -132,25 +127,18 @@ function InboxPageInner() {
     if (hydratingConvIdsRef.current.has(convId)) return;
     hydratingConvIdsRef.current.add(convId);
     try {
-      const supabase = createClient();
-      const { data, error } = await supabase
-        .from("conversations")
-        .select(CONVERSATION_SELECT)
-        .eq("id", convId)
-        .maybeSingle();
-      if (error) {
-        // Supabase errors have non-enumerable properties — log fields
-        // explicitly so the console message isn't just `{}`.
-        console.error("Failed to hydrate conversation:", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        });
+      const res = await fetch(
+        `/api/conversations/${encodeURIComponent(convId)}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        console.error("Failed to hydrate conversation:", res.status);
         return;
       }
-      if (!data) return;
-      const fetched = normalizeConversation(data);
+      const { conversation: fetched } = (await res.json()) as {
+        conversation: Conversation | null;
+      };
+      if (!fetched) return;
       setConversations((prev) => {
         const existing = prev.find((c) => c.id === fetched.id);
         if (existing) {
@@ -175,38 +163,23 @@ function InboxPageInner() {
   // Check WhatsApp connection status on mount
   useEffect(() => {
     const checkConnection = async () => {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const user = session?.user;
-
-      if (!user) return;
-
-      // whatsapp_config is one-row-per-account post-multi-user, so
-      // the previous `.eq('user_id', user.id)` would miss the row
-      // for any teammate who didn't personally save the config —
-      // the "WhatsApp not connected" banner would show in the
-      // shared inbox even though the admin had it configured.
-      // Resolve account_id via the profile and query by that.
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("account_id")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      const accountId = profile?.account_id as string | undefined;
-      if (!accountId) {
+      // Account scoping + auth happen server-side; the endpoint returns the
+      // account's single whatsapp_config row (or null).
+      try {
+        const res = await fetch("/api/whatsapp/config/row", {
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          setWhatsappConnected(false);
+          return;
+        }
+        const { config } = (await res.json()) as {
+          config: { status?: string } | null;
+        };
+        setWhatsappConnected(config?.status === "connected");
+      } catch {
         setWhatsappConnected(false);
-        return;
       }
-
-      const { data } = await supabase
-        .from("whatsapp_config")
-        .select("status")
-        .eq("account_id", accountId)
-        .maybeSingle();
-
-      setWhatsappConnected(data?.status === "connected");
     };
 
     checkConnection();

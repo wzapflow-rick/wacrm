@@ -1,9 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { RealtimeChannel } from "@supabase/supabase-js";
 
-import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import {
   derivePresence,
@@ -58,99 +56,51 @@ export function usePresence(enabled = true): UsePresenceResult {
   useEffect(() => {
     if (!active || !accountId) return;
 
-    const supabase = createClient();
     let cancelled = false;
 
-    const applyRow = (row: {
-      user_id: string;
-      status: StoredPresence;
-      last_seen_at: string;
-    }) => {
-      setRows((prev) => {
-        const next = new Map(prev);
-        next.set(row.user_id, {
-          status: row.status,
-          last_seen_at: row.last_seen_at,
-        });
-        return next;
-      });
+    // Fetch the full presence snapshot and REPLACE the map. Unlike the old
+    // Realtime path there are no out-of-order events to reconcile — each poll
+    // is an authoritative snapshot — so a straight replace is correct and
+    // also drops rows that vanished.
+    const fetchPresence = async () => {
+      try {
+        const res = await fetch("/api/presence", { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as {
+          presence: {
+            user_id: string;
+            status: StoredPresence;
+            last_seen_at: string;
+          }[];
+        };
+        if (cancelled) return;
+        const next: PresenceMap = new Map();
+        for (const r of data.presence ?? []) {
+          next.set(r.user_id, {
+            status: r.status,
+            last_seen_at: r.last_seen_at,
+          });
+        }
+        setRows(next);
+      } catch (err) {
+        if (!cancelled) {
+          console.error("[usePresence] fetch error:", err);
+        }
+      }
     };
 
-    // Subscribe FIRST, then snapshot. The snapshot MERGES into whatever
-    // Realtime has already delivered (keeping the newer last_seen_at)
-    // rather than replacing the map — so an event that lands while the
-    // fetch is in flight isn't clobbered by a staler snapshot row.
-    const channel: RealtimeChannel = supabase
-      .channel(`presence:${accountId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "member_presence",
-          filter: `account_id=eq.${accountId}`,
-        },
-        (payload) => {
-          if (payload.eventType === "DELETE") {
-            const old = payload.old as { user_id?: string };
-            if (!old.user_id) return;
-            setRows((prev) => {
-              if (!prev.has(old.user_id!)) return prev;
-              const next = new Map(prev);
-              next.delete(old.user_id!);
-              return next;
-            });
-            return;
-          }
-          applyRow(
-            payload.new as {
-              user_id: string;
-              status: StoredPresence;
-              last_seen_at: string;
-            },
-          );
-        },
-      )
-      .subscribe();
-
-    supabase
-      .from("member_presence")
-      .select("user_id, status, last_seen_at")
-      .eq("account_id", accountId)
-      .then(({ data, error }) => {
-        if (cancelled) return;
-        if (error) {
-          console.error("[usePresence] initial fetch error:", error.message);
-          return;
-        }
-        setRows((prev) => {
-          const next = new Map(prev);
-          for (const r of data ?? []) {
-            const userId = r.user_id as string;
-            const incoming: PresenceRow = {
-              status: r.status as StoredPresence,
-              last_seen_at: r.last_seen_at as string,
-            };
-            const existing = next.get(userId);
-            // A live event that arrived first must win over a staler
-            // snapshot row.
-            if (
-              !existing ||
-              new Date(incoming.last_seen_at) >= new Date(existing.last_seen_at)
-            ) {
-              next.set(userId, incoming);
-            }
-          }
-          return next;
-        });
-      });
-
-    const tick = setInterval(() => setNow(Date.now()), RE_DERIVE_MS);
+    // The re-derive tick doubles as the poll cadence: every ~15s we both
+    // refetch presence (to see others' heartbeats) and advance `now` (so a
+    // member who stopped beating decays to offline via staleness).
+    void fetchPresence();
+    const tick = setInterval(() => {
+      setNow(Date.now());
+      void fetchPresence();
+    }, RE_DERIVE_MS);
 
     return () => {
       cancelled = true;
       clearInterval(tick);
-      supabase.removeChannel(channel);
     };
   }, [active, accountId]);
 

@@ -1,9 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import type { Message, Conversation } from "@/types";
-import type { RealtimeChannel } from "@supabase/supabase-js";
 
 interface RealtimeEvent<T> {
   eventType: "INSERT" | "UPDATE" | "DELETE";
@@ -18,20 +16,37 @@ interface UseRealtimeOptions {
   enabled?: boolean;
 }
 
+/** How often to poll for inbox changes while the tab is visible. */
+const POLL_INTERVAL_MS = 5000;
+
+/**
+ * Inbox change feed.
+ *
+ * Formerly a Supabase Realtime (WebSocket) subscription; now a lightweight
+ * poller against `/api/inbox/changes`. The public API is unchanged — it still
+ * emits `onMessageEvent` / `onConversationEvent` and exposes `isConnected` —
+ * so the inbox page's event handlers and reconnect-resync machinery keep
+ * working as-is.
+ *
+ * Behaviour:
+ *   - Polls every 5s while the document is visible; pauses when hidden and
+ *     resumes (with an immediate catch-up poll) when the tab is shown again.
+ *   - Tracks a server-issued `cursor` (the DB clock) so successive polls have
+ *     no gaps or client/server clock-skew.
+ *   - `isConnected` reflects the last poll's success: a failed poll flips it
+ *     false, the next success flips it true. The page treats that false→true
+ *     edge as a reconnect and triggers a full resync — so transient errors
+ *     self-heal.
+ */
 export function useRealtime({
-  channelName,
   onMessageEvent,
   onConversationEvent,
   enabled = true,
 }: UseRealtimeOptions) {
-  const channelRef = useRef<RealtimeChannel | null>(null);
   const [isConnected, setIsConnected] = useState(false);
 
-  // Store latest callbacks in refs to avoid re-subscribing when the
-  // parent re-renders with fresh closures. Assigned inside an effect
-  // so the mutation doesn't happen during render (React 19's refs
-  // rule) — subscribers only read `.current` inside async Realtime
-  // callbacks, which always run after the render that updates it.
+  // Latest callbacks kept in refs so the polling effect doesn't restart when
+  // the parent re-renders with fresh closures.
   const onMessageRef = useRef(onMessageEvent);
   const onConversationRef = useRef(onConversationEvent);
   useEffect(() => {
@@ -39,55 +54,102 @@ export function useRealtime({
     onConversationRef.current = onConversationEvent;
   });
 
+  // Server clock cursor. null until the first poll establishes it.
+  const cursorRef = useRef<string | null>(null);
+  const pollingRef = useRef(false);
+  const stoppedRef = useRef(false);
+
+  const poll = useCallback(async () => {
+    // Guard against overlapping polls (a slow request spanning the interval).
+    if (pollingRef.current || stoppedRef.current) return;
+    pollingRef.current = true;
+    try {
+      const since = cursorRef.current;
+      const url = since
+        ? `/api/inbox/changes?since=${encodeURIComponent(since)}`
+        : `/api/inbox/changes`;
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`changes poll failed: ${res.status}`);
+
+      const data = (await res.json()) as {
+        conversations: Conversation[];
+        messages: Message[];
+        cursor: string;
+      };
+
+      // Emit messages first, then conversations, so the authoritative
+      // conversation fields (unread_count, last message) applied by the
+      // conversation UPDATE win over the optimistic +1 the message INSERT
+      // handler does.
+      for (const msg of data.messages) {
+        onMessageRef.current?.({ eventType: "INSERT", new: msg, old: {} });
+      }
+      for (const conv of data.conversations) {
+        // A conversation whose row was created after our previous cursor is
+        // brand new (INSERT); otherwise it's an existing row that changed
+        // (UPDATE). The page's handlers converge either way, but this keeps
+        // the semantics honest.
+        const isNew =
+          since != null && new Date(conv.created_at) > new Date(since);
+        onConversationRef.current?.({
+          eventType: isNew ? "INSERT" : "UPDATE",
+          new: conv,
+          old: {},
+        });
+      }
+
+      cursorRef.current = data.cursor;
+      setIsConnected(true);
+    } catch {
+      setIsConnected(false);
+    } finally {
+      pollingRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     if (!enabled) return;
 
-    const supabase = createClient();
+    stoppedRef.current = false;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
 
-    const channel = supabase
-      .channel(channelName)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "messages" },
-        (payload) => {
-          onMessageRef.current?.({
-            eventType: payload.eventType as RealtimeEvent<Message>["eventType"],
-            new: payload.new as Message,
-            old: payload.old as Partial<Message>,
-          });
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "conversations" },
-        (payload) => {
-          onConversationRef.current?.({
-            eventType: payload.eventType as RealtimeEvent<Conversation>["eventType"],
-            new: payload.new as Conversation,
-            old: payload.old as Partial<Conversation>,
-          });
-        }
-      )
-      .subscribe((status) => {
-        setIsConnected(status === "SUBSCRIBED");
-      });
+    const start = () => {
+      if (intervalId != null) return;
+      // Immediate catch-up poll, then settle into the interval.
+      void poll();
+      intervalId = setInterval(() => void poll(), POLL_INTERVAL_MS);
+    };
 
-    channelRef.current = channel;
+    const stop = () => {
+      if (intervalId != null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        start();
+      } else {
+        // Pause polling while the tab is hidden to save the VPS and battery.
+        stop();
+      }
+    };
+
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
-      supabase.removeChannel(channel);
-      channelRef.current = null;
+      stoppedRef.current = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      stop();
       setIsConnected(false);
     };
-  }, [channelName, enabled]);
+  }, [enabled, poll]);
 
   const unsubscribe = useCallback(() => {
-    if (channelRef.current) {
-      const supabase = createClient();
-      supabase.removeChannel(channelRef.current);
-      channelRef.current = null;
-      setIsConnected(false);
-    }
+    stoppedRef.current = true;
+    setIsConnected(false);
   }, []);
 
   return { isConnected, unsubscribe };
