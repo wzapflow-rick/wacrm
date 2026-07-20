@@ -27,63 +27,55 @@ export default function NotificationsPage() {
   const [markingAll, setMarkingAll] = useState(false);
 
   const load = useCallback(async () => {
-    if (!accountId) return;
-    const supabase = createClient();
-    const { data, error: fetchErr } = await supabase
-      .from("notifications")
-      .select("*")
-      .eq("account_id", accountId)
-      .order("created_at", { ascending: false })
-      .limit(100);
-    if (fetchErr) {
-      setError(fetchErr.message);
+    const res = await fetch("/api/notifications", { cache: "no-store" });
+    if (!res.ok) {
+      setError("Failed to load notifications");
       return;
     }
-    setNotifications((data ?? []) as Notification[]);
-  }, [accountId]);
+    const { notifications: list } = (await res.json()) as {
+      notifications: Notification[];
+    };
+    setNotifications(list ?? []);
+  }, []);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 
-  // Realtime — new assignments appear without a refresh, and a
-  // "mark all read" fired from another tab/device stays in sync here.
+  // Formerly a Supabase Realtime channel; now a lightweight poller so new
+  // assignments (and cross-tab "mark all read") still surface here. Polls
+  // every 15s while the tab is visible and pauses when it's hidden.
   useEffect(() => {
-    const supabase = createClient();
-    const channel = supabase
-      .channel("notifications-page")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "notifications" },
-        (payload) => {
-          if (payload.eventType === "INSERT") {
-            const row = payload.new as Notification;
-            setNotifications((prev) => {
-              if (!prev) return [row];
-              if (prev.some((n) => n.id === row.id)) return prev;
-              return [row, ...prev];
-            });
-          } else if (payload.eventType === "UPDATE") {
-            const row = payload.new as Notification;
-            setNotifications((prev) =>
-              prev?.map((n) => (n.id === row.id ? { ...n, ...row } : n)) ??
-              prev,
-            );
-          } else if (payload.eventType === "DELETE") {
-            const oldRow = payload.old as Partial<Notification>;
-            setNotifications(
-              (prev) => prev?.filter((n) => n.id !== oldRow.id) ?? prev,
-            );
-          }
-        },
-      )
-      .subscribe();
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const start = () => {
+      if (intervalId != null) return;
+      intervalId = setInterval(() => void load(), 15000);
+    };
+    const stop = () => {
+      if (intervalId != null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void load();
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
-      supabase.removeChannel(channel);
+      document.removeEventListener("visibilitychange", onVisibility);
+      stop();
     };
-  }, []);
+  }, [load]);
 
   const markRead = useCallback(
     async (id: string) => {
@@ -97,13 +89,12 @@ export default function NotificationsPage() {
               : n,
           ) ?? prev,
       );
-      const supabase = createClient();
-      const { error: updateErr } = await supabase
-        .from("notifications")
-        .update({ read_at: new Date().toISOString() })
-        .eq("id", id)
-        .is("read_at", null);
-      if (updateErr) {
+      const res = await fetch("/api/notifications", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) {
         toast.error("Failed to mark notification as read");
         load();
       }

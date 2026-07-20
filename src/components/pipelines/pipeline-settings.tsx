@@ -16,7 +16,6 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { createClient } from "@/lib/supabase/client";
 import type { Pipeline, PipelineStage } from "@/types";
 import {
   Dialog,
@@ -70,7 +69,6 @@ export function PipelineSettings({
   onCreateNewPipeline,
 }: PipelineSettingsProps) {
   const t = useTranslations("Pipelines.settings");
-  const supabase = createClient();
 
   const [name, setName] = useState(pipeline.name);
   const [localStages, setLocalStages] = useState<PipelineStage[]>(stages);
@@ -119,16 +117,21 @@ export function PipelineSettings({
     }));
 
     const [renameRes, stagesRes] = await Promise.all([
-      supabase
-        .from("pipelines")
-        .update({ name: name.trim() })
-        .eq("id", pipeline.id),
-      supabase.from("pipeline_stages").upsert(stageRows, { onConflict: "id" }),
+      fetch(`/api/pipelines/${pipeline.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      }),
+      fetch(`/api/pipelines/${pipeline.id}/stages`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stages: stageRows }),
+      }),
     ]);
 
     setSaving(false);
 
-    if (renameRes.error || stagesRes.error) {
+    if (!renameRes.ok || !stagesRes.ok) {
       toast.error(t("toastFailedSave"));
       return;
     }
@@ -142,40 +145,37 @@ export function PipelineSettings({
   async function handleAddStage() {
     const trimmed = newStageName.trim();
     if (!trimmed) return;
-    const { data, error } = await supabase
-      .from("pipeline_stages")
-      .insert({
-        pipeline_id: pipeline.id,
+    const res = await fetch(`/api/pipelines/${pipeline.id}/stages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
         name: trimmed,
         color: newStageColor,
         position: localStages.length,
-      })
-      .select()
-      .single();
-    if (error || !data) {
+      }),
+    });
+    if (!res.ok) {
       toast.error(t("toastFailedAddStage"));
       return;
     }
-    setLocalStages([...localStages, data as PipelineStage]);
+    const { stage } = (await res.json()) as { stage: PipelineStage };
+    setLocalStages([...localStages, stage]);
     setNewStageName("");
     setNewStageColor(STAGE_COLORS[(localStages.length + 1) % STAGE_COLORS.length]);
   }
 
   async function handleRemoveStage(stageId: string) {
-    // Refuse to delete if deals still reference the stage (FK would fail).
-    const { count } = await supabase
-      .from("deals")
-      .select("id", { count: "exact", head: true })
-      .eq("stage_id", stageId);
-    if (count && count > 0) {
+    // The server refuses (409) if any deal still references the stage, so the
+    // FK-safety check lives there rather than in two client round-trips.
+    const res = await fetch(
+      `/api/pipelines/${pipeline.id}/stages/${stageId}`,
+      { method: "DELETE" },
+    );
+    if (res.status === 409) {
       toast.error(t("toastMoveOrDeleteDeals"));
       return;
     }
-    const { error } = await supabase
-      .from("pipeline_stages")
-      .delete()
-      .eq("id", stageId);
-    if (error) {
+    if (!res.ok) {
       toast.error(t("toastFailedDeleteStage"));
       return;
     }
@@ -184,13 +184,12 @@ export function PipelineSettings({
 
   async function handleDeletePipeline() {
     setDeleting(true);
-    // ON DELETE CASCADE handles deals + stages.
-    const { error } = await supabase
-      .from("pipelines")
-      .delete()
-      .eq("id", pipeline.id);
+    // Server deletes the pipeline; ON DELETE CASCADE handles deals + stages.
+    const res = await fetch(`/api/pipelines/${pipeline.id}`, {
+      method: "DELETE",
+    });
     setDeleting(false);
-    if (error) {
+    if (!res.ok) {
       toast.error(t("toastFailedDeletePipeline"));
       return;
     }
